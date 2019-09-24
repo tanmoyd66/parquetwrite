@@ -17,10 +17,10 @@ import com.google.common.hash.BloomFilter;
 import com.google.common.hash.Funnels;
 import com.sangupta.murmur.Murmur3;
 
-import trd.test.utilities.Utilities.Config;
 import trd.test.utilities.LocalDateInfo;
 import trd.test.utilities.Tuples;
 import trd.test.utilities.Utilities;
+import trd.test.utilities.Utilities.Config;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -51,8 +51,6 @@ import javax.sql.DataSource;
 
 public class Generator {
 	public static long seed = 137234567L;
-
-	
 	
 	public static class GeneratorData {
 		List<Short>     platform = new ArrayList<>();
@@ -80,28 +78,6 @@ public class Generator {
 		}
 	}
 	
-	public static class Work {
-		int id;
-		int countPerFile;
-		final String file;
-		final GeneratorData gd;
-		final Date start;
-		final Date end;
-		final LocalDateInfo ldInfo;
-		final Config config;
-		
-		public Work(String file, int id, int countPerFile, GeneratorData gd, LocalDateInfo ldInfo, Date start, Date end, Config config) {
-			this.file = file;
-			this.id = id;
-			this.countPerFile = countPerFile;
-			this.gd = gd;
-			this.start = start;
-			this.end = end;
-			this.ldInfo = ldInfo;
-			this.config = config;
-		}
-	}
-
 	private static void Sleep(long millis) {
 		try {
 			Thread.sleep(millis);
@@ -389,32 +365,46 @@ public class Generator {
 //		System.out.printf("Total Updates:%d\n", totalUpdateCount);
 	}
 
-	public static class PerThreadGenerator implements Runnable {
-		final ConcurrentLinkedQueue<Work> workQueue;
-		final CountDownLatch cdl;
+	public static class Work {
+		int id;
+		int countPerFile;
+		final String file;
+		final GeneratorData gd;
+		final Date start;
+		final Date end;
+		final LocalDateInfo ldInfo;
+		final Config config;
 		
-		public PerThreadGenerator(ConcurrentLinkedQueue<Work> workQueue, CountDownLatch cdl) {
-			this.workQueue = workQueue;
+		public Work(String file, int id, int countPerFile, GeneratorData gd, LocalDateInfo ldInfo, Date start, Date end, Config config) {
+			this.file = file;
+			this.id = id;
+			this.countPerFile = countPerFile;
+			this.gd = gd;
+			this.start = start;
+			this.end = end;
+			this.ldInfo = ldInfo;
+			this.config = config;
+		}
+	}
+
+	public static class PerThreadGenerator implements Runnable {
+		final CountDownLatch cdl;
+		final Work work;
+		
+		public PerThreadGenerator(Work work, CountDownLatch cdl) {
+			this.work = work;
 			this.cdl = cdl;
 		}
 		
 		@Override
 		public void run() {
-			while (true) {
-				try {
-					Work work = workQueue.poll();
-					if (work == null) {
-						Sleep(100);
-						continue;
-					} else if (work.id == -1) {
-						break;
-					}
-					generateParquetFile(work);
-				} catch (Exception ex) {
-					ex.printStackTrace();
-				}
+			try {
+				generateParquetFile(work);
+			} catch (Exception ex) {
+				ex.printStackTrace();
+			} finally {
+				cdl.countDown();
 			}
-			cdl.countDown();
 		}
 		
 		HashMap<Long, ParquetWriter<Group>> parquetWriterMap = new HashMap<>();
@@ -579,10 +569,10 @@ public class Generator {
 					ThreadPoolExecutor executor) 
 					throws IOException, ParseException, InterruptedException, ClassNotFoundException, SQLException {
 		
-		ConcurrentLinkedQueue<Work> workQueue = new ConcurrentLinkedQueue<>();
 		long startTime = System.nanoTime();
 		
 		// Queue the tasks
+		CountDownLatch cdl = new CountDownLatch(config.threadPoolSize);
 		Date startOfDay = new Date(ldInfo.year, ldInfo.month, ldInfo.date); 
 		for (int i = 0; i < config.threadPoolSize; i++) {
 			long totalMillis = 1000 * 3600 * 24;
@@ -599,16 +589,9 @@ public class Generator {
 								startForThis,
 								endForThis,
 								config);
-			workQueue.offer(work);
+			executor.execute(new PerThreadGenerator(work, cdl));
 		}
 		long distributeEndTime = System.nanoTime();
-		
-		// Create threads and sentinels to read from the queues and do work
-		CountDownLatch cdl = new CountDownLatch(config.threadPoolSize);
-		for (int i = 0; i < config.threadPoolSize; i++) {
-			workQueue.add(new Work(null, -1, 0, null, null, null, null, null));
-			new Thread(new PerThreadGenerator(workQueue, cdl)).start();
-		}
 		cdl.await();
 		long parquetGenerationTime = System.nanoTime();
 		
@@ -619,7 +602,6 @@ public class Generator {
 		
 		
 		// All files created. Update the Bloom Filters in the database
-		Class.forName("com.mysql.jdbc.Driver");
 		if (executor != null) {
 			updateBloomFilterToDBUsingThreadPoolExecutor(config, ds, ldInfo, gd.bfMapGlobal, executor);
 		} else {

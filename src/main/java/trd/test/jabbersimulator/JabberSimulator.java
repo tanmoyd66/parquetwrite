@@ -71,7 +71,6 @@ public class JabberSimulator {
 		ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(config.threadPoolSize);
 		
 		// Create connection pool to reduce connection buildup time
-		Class.forName("com.mysql.jdbc.Driver");
 		HikariConfig hconfig = new HikariConfig();
 		HikariDataSource ds;
 		hconfig.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/jabber");
