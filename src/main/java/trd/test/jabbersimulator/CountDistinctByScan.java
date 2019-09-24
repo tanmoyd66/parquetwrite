@@ -12,19 +12,19 @@ import com.google.common.hash.BloomFilter;
 import com.google.common.hash.Funnels;
 import com.sangupta.murmur.Murmur3;
 
-import trd.test.jabbersimulator.JabberSimulator.Config;
+import trd.test.utilities.Utilities.Config;
 import trd.test.utilities.LocalDateInfo;
 import trd.test.utilities.Tuples;
 import trd.test.utilities.Utilities;
 
 import java.io.File;
 import java.io.IOException;
-import java.sql.Connection;
 import java.sql.SQLException;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -84,10 +84,12 @@ public class CountDistinctByScan {
 		@Override
 		public void run() {
 			try {
+//				System.out.printf("Reading file %s under latch:%d\n", path, cdl.hashCode());
 				readParquetFile(new Work(path, useColumnIndexFilter, customerId, wg));
 			} catch (Exception ex) {
 				ex.printStackTrace();
 			} finally {
+//				System.out.printf("Marking down latch:%d\n", cdl.hashCode());
 				cdl.countDown();
 			}
 		}
@@ -122,17 +124,18 @@ public class CountDistinctByScan {
 		
 	}	
 	
-	public static void readParquetFile(Work work) throws IOException {
+	public static void readParquetFile(Work work) throws IOException, InterruptedException {
 		Path inPath = new Path(work.path);
 		File file = new File(inPath.toString());
 		if (!file.exists())
 			return;
 		
-		FilterPredicate actualFilter = eq(longColumn("customerid"), work.customerId);
+//		FilterPredicate actualFilter = eq(longColumn("customerid"), work.customerId);
+		int count = 0;
 		try (ParquetReader<Group> reader = ParquetReader
 											.builder(new GroupReadSupport(), inPath)
-											.withFilter(FilterCompat.get(actualFilter))
-											.useColumnIndexFilter(work.useColumnIndexFilter)
+//											.withFilter(FilterCompat.get(actualFilter))
+//											.useColumnIndexFilter(work.useColumnIndexFilter)
 											.build()) {
 			Group group;
 			while ((group = reader.read()) != null) {
@@ -140,25 +143,28 @@ public class CountDistinctByScan {
 				if (binVal != null) {
 					byte[] bVal = binVal.getBytes();
 					long hashedVal = Murmur3.hash_x86_32(bVal, bVal.length, Generator.seed);
-					work.wg.bfGlobal.put(hashedVal);
-					work.wg.count.incrementAndGet();
+					synchronized (work.wg) {
+						work.wg.bfGlobal.put(hashedVal);
+						work.wg.count.incrementAndGet();
+						count++;
+					}
 				}
 			}
-		} 
+		}
+//		System.out.printf("%s : Count: %d Actual: %d, Bloom: %d\n", inPath.getName(), count, work.wg.count.get(), work.wg.bfGlobal.approximateElementCount());
 	}
 	
-	public static long getCountsForDaysFromFiles(String directory, Config config, long customerId, int year, List<Tuples.Pair<Integer, Integer>> probeList) throws InterruptedException {
+	public static long getCountsForDaysFromFiles(Config config, long customerId, int year, List<Tuples.Pair<Integer, Integer>> probeList) throws InterruptedException {
 		
 //		System.out.printf("%s\n", Arrays.toString(probeList.toArray()));
 		WorkGlobal wg = new WorkGlobal(config);
 		ConcurrentLinkedQueue<Work> workQueue = new ConcurrentLinkedQueue<>();
-		long startTime = System.nanoTime();
 		int numThreads = 30;
 		
 		// Get list of files from probe list and create work
 		int countOfWorkItems = 0;
 		for (Tuples.Pair<Integer, Integer> probeFile : probeList) {
-			String dir = String.format("%s/%s/%s/%s", directory, year, probeFile.a, probeFile.b);			
+			String dir = String.format("%s/%s/%s/%s", config.directory, year, probeFile.a, probeFile.b);			
 			Work work = new Work(
 							dir,
 							true,
@@ -180,35 +186,59 @@ public class CountDistinctByScan {
 		
 		// Perform parallel scan and count
 		cdl.await();
-		
+//		Thread.sleep(1000);
 //		System.out.printf("%d, %d\n", wg.count.get(), wg.bfGlobal.approximateElementCount());
 		return wg.count.get();
 	}	
 
-	public static long getCountsForDaysFromFilesUsingThreadPool(String directory, Config config, 
-																ThreadPoolExecutor tpe, 
-																long customerId, 
-																int year, 
-																List<Tuples.Pair<Integer, Integer>> probeList) throws InterruptedException {
+	public static long getCountsForDaysFromFilesUsingThreadPool(
+							Config config, 
+							ThreadPoolExecutor tpe, 
+							long customerId, 
+							int year, 
+							List<Tuples.Pair<Integer, Integer>> probeList) throws InterruptedException {
 		
 		WorkGlobal wg = new WorkGlobal(config);
 		int numTasks = probeList.size();
 		
-		CountDownLatch cdl = new CountDownLatch(numTasks);
+		List<String> fileToScan = new ArrayList<>();
 		for (int i = 0; i < numTasks; i++) {
 			Tuples.Pair<Integer, Integer> probeFile = probeList.get(i);
-			String dir = String.format("%s/%s/%s/%s", directory, year, probeFile.a, probeFile.b);			
-			tpe.execute(new PerThreadCollectorTask(cdl, dir, true, customerId, wg));
+			String dirPath = String.format("%s/%s/%s/%s/%s", config.directory, customerId, year, probeFile.a, probeFile.b);
+			File dir = new File(dirPath);
+			File[] filesInDir = Utilities.listFiles(dir);
+			if (filesInDir != null) {
+				for (File file : filesInDir) {
+					String filePath = file.getAbsolutePath();
+					if (filePath.endsWith(".parquet")) {
+						fileToScan.add(file.getAbsolutePath());
+					}
+				}
+			}
+		}
+
+		if (fileToScan.size() > 0) {
+			CountDownLatch cdl = new CountDownLatch(fileToScan.size());
+			for (String file : fileToScan)
+				tpe.execute(new PerThreadCollectorTask(cdl, file, true, customerId, wg));
+			cdl.await();
+			return wg.bfGlobal.approximateElementCount();
 		}
 		
-		// Perform parallel scan and count
-		cdl.await();
-		return wg.count.get();
+		return 0;
+		
+//		Object[] filesScanned = fileToScan.toArray();
+//		System.out.printf("Scanning %d files:\n",fileToScan.size());
+//		for (Object o : filesScanned)
+//			System.out.println(o);
+//		
+//		// Perform parallel scan and count
+//		cdl.await();
+//		return wg.bfGlobal.approximateElementCount();
 	}	
 	
 	public static long getDistinctCountFromFile(
-							String directory, 
-							Config config, 
+							trd.test.utilities.Utilities.Config config, 
 							long customerId, 
 							ThreadPoolExecutor tpe,
 							LocalDateInfo start, 
@@ -222,14 +252,14 @@ public class CountDistinctByScan {
 				LocalDateInfo endLD   = new LocalDateInfo(start.year, 12, 31);
 				List<LocalDateInfo> ldInfoList = LocalDateInfo.getAllLocalDateInfosBetween2Dates(startLD, endLD);
 				for (LocalDateInfo ldi : ldInfoList) {
-					String p = directory + "/" + ldi.getStorageDirectory();
+					String p = config.directory + "/" + customerId + "/" + ldi.getStorageDirectory();
 					if (new File(p).exists())
 						probeList.add(new Tuples.Pair<Integer, Integer>(ldi.month, ldi.date));
 				}
 			} else if (start.date == -1) {
 				for (int i = 1; i <= 31; i++) {
 					LocalDateInfo ldi = new LocalDateInfo(start.year, start.month, i);
-					String p = directory + "/" + ldi.getStorageDirectory();
+					String p = config.directory + "/" + customerId + "/" + ldi.getStorageDirectory();
 					if (new File(p).exists())
 						probeList.add(new Tuples.Pair<Integer, Integer>(start.month, i));
 				}
@@ -256,7 +286,7 @@ public class CountDistinctByScan {
 			}
 		}
 		return tpe == null ? 
-					CountDistinctByScan.getCountsForDaysFromFiles(directory, config, customerId, start.year, probeList): 
-					CountDistinctByScan.getCountsForDaysFromFilesUsingThreadPool(directory, config, tpe, customerId, start.year, probeList);
+					CountDistinctByScan.getCountsForDaysFromFiles(config, customerId, start.year, probeList): 
+					CountDistinctByScan.getCountsForDaysFromFilesUsingThreadPool(config, tpe, customerId, start.year, probeList);
 	}
 }

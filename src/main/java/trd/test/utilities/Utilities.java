@@ -17,6 +17,28 @@ import org.apache.commons.dbcp.PoolingDataSource;
 import org.apache.commons.pool.impl.GenericObjectPool;
 
 public class Utilities {
+	static String TEST_FILE = "/tmp/v11.parquet";
+
+	public static class Config {
+		public int      bfSize = 100_000;
+		public String   mode = "full";
+		public String   directory = TEST_FILE;
+		public String   bloomFilterLoc = TEST_FILE + "/bloomfilters";
+		public Integer  totalBatches = 1;
+		public Integer  countPerFile = 1024 * 1024 * 10;
+		public Integer  threadPoolSize = 10;
+
+		public void fillFromOptions(String[] args) {
+			mode            = args.length >= 1 ? args[0] : mode;
+			directory       = args.length >= 2 ? args[1] : directory;
+			bloomFilterLoc  = args.length >= 2 ? args[1] + "/bloomfilters" : bloomFilterLoc;
+			totalBatches    = args.length >= 3 ? Integer.parseInt(args[2]) : totalBatches;
+			countPerFile    = args.length >= 4 ? 1024 * 128 * Integer.parseInt(args[3]) : countPerFile;
+			threadPoolSize  = args.length >= 5 ? Integer.parseInt(args[4]) : threadPoolSize;
+			bfSize          = args.length >= 6 ? Integer.parseInt(args[5]) : bfSize;
+		}
+	}
+
 	private static boolean deleteDirectory(File dir) {
 		if (dir.isDirectory()) {
 			File[] children = dir.listFiles();
@@ -61,8 +83,8 @@ public class Utilities {
 		return DriverManager.getConnection("jdbc:mysql://127.0.0.1:3306/jabber?user=root&password=27Network");
 	}
 
-	public static void resetDemo(String directory) {
-		deleteDirectory(directory);
+	public static void resetDemo(Config config) {
+		deleteDirectory(config.directory);
 		try (Connection c = getConnection()) {
 			c.createStatement().execute("truncate table countdistinctoninstanceid");
 		} catch (Exception ex) {

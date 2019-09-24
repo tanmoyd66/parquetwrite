@@ -12,7 +12,7 @@ import com.google.common.hash.BloomFilter;
 import com.google.common.hash.Funnels;
 
 import trd.test.jabbersimulator.Generator;
-import trd.test.jabbersimulator.JabberSimulator.Config;
+import trd.test.utilities.Utilities.Config;
 import trd.test.utilities.LocalDateInfo;
 import trd.test.utilities.Tuples;
 import trd.test.utilities.Utilities;
@@ -62,8 +62,9 @@ public class CountDistinct {
 		if (rs != null) {
 			BloomFilter<Long> bf = BloomFilter.create(Funnels.longFunnel(), config.bfSize, 0.001);
 			while (rs.next()) {
-				BloomFilter<Long> bfThis = Generator.bytesToBf(rs.getBytes(1));
-				bf.putAll(bfThis);
+				Tuples.Pair<String, BloomFilter<Long>> bfThis = Generator.getBloomFilterFromRowSet(rs, 1);
+				if (bfThis != null && bfThis.b != null)
+				bf.putAll(bfThis.b);
 			}
 			return (int) bf.approximateElementCount();
 		}
@@ -107,6 +108,4 @@ public class CountDistinct {
 			}
 		}
 	}
-	
-	
 }
