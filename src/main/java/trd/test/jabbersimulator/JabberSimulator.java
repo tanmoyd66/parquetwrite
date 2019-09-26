@@ -3,6 +3,7 @@ package trd.test.jabbersimulator;
 import java.sql.Connection;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -87,6 +88,7 @@ public class JabberSimulator {
 		// First generate the data for 90 days
 		if (fGenerate) {
 			System.out.printf("Creating Data for 90 days...------------------------------------------\n");
+			System.out.println(new Date());
 			for (int i = 0; i < 90; i++) {
 				Generator.generateFilesInParallelForDate(
 							config,
@@ -107,10 +109,10 @@ public class JabberSimulator {
 		LocalDateInfo ldInfoToday = new LocalDateInfo(LocalDate.now());
 		LocalDateInfo ldInfoYTD   = new LocalDateInfo(2019, -1, -1);
 		LocalDateInfo ldInfoMTD   = new LocalDateInfo(2019, 9, -1);
-		LocalDateInfo ldDate1     = new LocalDateInfo(2019, 9, 22);
+		LocalDateInfo ldDate1     = new LocalDateInfo(2019, 9, 24);
 		LocalDateInfo ldDate2     = new LocalDateInfo(2019, 10,10);
-		LocalDateInfo ldDate3     = new LocalDateInfo(2019, 9, 22);
-		LocalDateInfo ldDate4     = new LocalDateInfo(2019, 9, 23);
+		LocalDateInfo ldDate3     = new LocalDateInfo(2019, 9, 24);
+		LocalDateInfo ldDate4     = new LocalDateInfo(2019, 9, 25);
 
 		List<Long> customers = new ArrayList<Long>();
 		IntStream.range(0, 10).forEach(x -> customers.add((long) x));
@@ -126,6 +128,7 @@ public class JabberSimulator {
 		};
 
 		System.out.printf("Retrieving count distincts from database...------------------------------------------\n");
+		System.out.println(new Date());
 		try (Connection conn = ds.getConnection()) {
 			for (Tuples.Triple<String, LocalDateInfo, LocalDateInfo> range : ranges) {
 
@@ -150,6 +153,7 @@ public class JabberSimulator {
 //		customers.clear();
 //		IntStream.range(0, 1).forEach(x -> customers.add((long) x));
 		System.out.printf("Retrieving count distincts from files by scanning...------------------------------------------\n");
+		System.out.println(new Date());
 		for (Tuples.Triple<String, LocalDateInfo, LocalDateInfo> range : ranges) {
 
 			Double[] elapsed = new Double[customers.size()];
@@ -171,5 +175,6 @@ public class JabberSimulator {
 		System.out.printf("Done...------------------------------------------\n");
 		executor.shutdown();
 		executor2.shutdown();
+		System.out.println(new Date());
 	}
 }

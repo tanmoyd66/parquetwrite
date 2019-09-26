@@ -130,9 +130,24 @@ public class BloomFilterTest {
 		System.out.printf("Size of %s Bloom-Filter: %s\n", aBloomFilter.getName(), Arrays.toString(readResults));
 	}
 
+	
 	public static void main(String[] args) {
 
-		testSizing("Oretes", new BF_Oretes());
-		testSizing("Guava ", new BF_Guava());
+//		testSizing("Oretes", new BF_Oretes());
+//		testSizing("Guava ", new BF_Guava());
+		
+		BloomFilter<Long> bf1 = new FilterBuilder(100_000, accuracy).buildBloomFilter();
+		BloomFilter<Long> bf2 = new FilterBuilder(1_000_000, accuracy).buildBloomFilter();
+
+		for (long i = 0L; i < 2000; i++)
+			bf1.add(i);
+		System.out.printf("%f\n", bf1.getEstimatedPopulation());
+			
+		for (long i = 3000L; i < 4000; i++)
+			bf2.add(i);
+		System.out.printf("%f\n", bf2.getEstimatedPopulation());
+		
+		bf2.union(bf1);
+		System.out.printf("%f\n", bf2.getEstimatedPopulation());
 	}
 }

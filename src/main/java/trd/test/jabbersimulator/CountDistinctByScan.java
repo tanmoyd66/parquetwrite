@@ -1,5 +1,14 @@
 package trd.test.jabbersimulator;
 
+import org.apache.arrow.memory.RootAllocator;
+import org.apache.arrow.vector.FieldVector;
+import org.apache.arrow.vector.IntVector;
+import org.apache.arrow.vector.VarBinaryVector;
+import org.apache.arrow.vector.VectorSchemaRoot;
+import org.apache.arrow.vector.dictionary.DictionaryProvider;
+import org.apache.arrow.vector.ipc.ArrowFileReader;
+import org.apache.arrow.vector.ipc.SeekableReadChannel;
+import org.apache.arrow.vector.ipc.message.ArrowBlock;
 import org.apache.hadoop.fs.Path;
 import org.apache.parquet.example.data.Group;
 import org.apache.parquet.filter2.compat.FilterCompat;
@@ -18,13 +27,16 @@ import trd.test.utilities.Tuples;
 import trd.test.utilities.Utilities;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -85,7 +97,8 @@ public class CountDistinctByScan {
 		public void run() {
 			try {
 //				System.out.printf("Reading file %s under latch:%d\n", path, cdl.hashCode());
-				readParquetFile(new Work(path, useColumnIndexFilter, customerId, wg));
+//				readParquetFile(new Work(path, useColumnIndexFilter, customerId, wg));
+				readArrowFile(new Work(path, useColumnIndexFilter, customerId, wg));
 			} catch (Exception ex) {
 				ex.printStackTrace();
 			} finally {
@@ -93,7 +106,9 @@ public class CountDistinctByScan {
 				cdl.countDown();
 			}
 		}
-	}	
+	}
+	
+	
 	public static class PerThreadCollector implements Runnable {
 		final ConcurrentLinkedQueue<Work> workQueue;
 		final CountDownLatch cdl;
@@ -130,12 +145,9 @@ public class CountDistinctByScan {
 		if (!file.exists())
 			return;
 		
-//		FilterPredicate actualFilter = eq(longColumn("customerid"), work.customerId);
 		int count = 0;
 		try (ParquetReader<Group> reader = ParquetReader
 											.builder(new GroupReadSupport(), inPath)
-//											.withFilter(FilterCompat.get(actualFilter))
-//											.useColumnIndexFilter(work.useColumnIndexFilter)
 											.build()) {
 			Group group;
 			while ((group = reader.read()) != null) {
@@ -151,7 +163,79 @@ public class CountDistinctByScan {
 				}
 			}
 		}
-//		System.out.printf("%s : Count: %d Actual: %d, Bloom: %d\n", inPath.getName(), count, work.wg.count.get(), work.wg.bfGlobal.approximateElementCount());
+	}
+
+	public static String getGuidFromByteArray(byte[] bytes) {
+	    ByteBuffer bb = ByteBuffer.wrap(bytes);
+	    long high = bb.getLong();
+	    long low = bb.getLong();
+	    UUID uuid = new UUID(high, low);
+	    return uuid.toString();
+	}
+	
+	@SuppressWarnings("unused")
+	public static void readArrowFile(Work work) throws IOException, InterruptedException {
+		Path inPath = new Path(work.path);
+		File file = new File(inPath.toString());
+		if (!file.exists())
+			return;
+		
+		try (FileInputStream fis = new FileInputStream(file.getAbsolutePath())) {
+			DictionaryProvider.MapDictionaryProvider provider = new DictionaryProvider.MapDictionaryProvider();
+			RootAllocator ra = new RootAllocator(Integer.MAX_VALUE);
+			try (ArrowFileReader arrowFileReader = new ArrowFileReader(new SeekableReadChannel(fis.getChannel()), ra)) {
+
+				int instanceIdFieldIndex = -1;
+				VectorSchemaRoot root = arrowFileReader.getVectorSchemaRoot();
+				List<ArrowBlock> arrowBlocks = arrowFileReader.getRecordBlocks();
+								
+				for (int i = 0; i < arrowBlocks.size(); i++) {
+					try {
+						// Load block
+						ArrowBlock ab = arrowBlocks.get(i);
+						arrowFileReader.loadRecordBatch(ab);
+						
+//						System.out.printf("Block---------------%d\n", i);
+
+						// Pin instance Id Field
+						List<FieldVector> fieldVector = root.getFieldVectors();
+						if (instanceIdFieldIndex == -1) {
+							for (int j = 0; j < fieldVector.size(); j++) {
+								if (fieldVector.get(j).getField().getName().equalsIgnoreCase("installationId")) {
+									instanceIdFieldIndex = j;
+									break;
+								}
+							}
+							if (instanceIdFieldIndex == -1)
+								continue;
+						}
+	
+						FieldVector instanceIdField = fieldVector.get(instanceIdFieldIndex);
+						VarBinaryVector varBinaryVector = ((VarBinaryVector) instanceIdField);
+						int vc = varBinaryVector.getValueCount();
+						for (int j = 0; j < varBinaryVector.getValueCount(); j++) {
+							byte[] bVal = null;
+							try {
+								bVal = varBinaryVector.get(j);
+//								System.out.printf("%s\n", getGuidFromByteArray(bVal));
+							} catch (Exception ex) {
+								ex.printStackTrace();
+								continue;
+							}
+							long hashedVal = Murmur3.hash_x86_32(bVal, bVal.length, Generator.seed);
+							synchronized (work.wg) {
+								work.wg.bfGlobal.put(hashedVal);
+								work.wg.count.incrementAndGet();
+							}
+						}
+						varBinaryVector.clear();
+						varBinaryVector.close();
+					} catch (Exception ex) {
+						ex.printStackTrace();
+					}
+				}
+			}
+		}
 	}
 	
 	public static long getCountsForDaysFromFiles(Config config, long customerId, int year, List<Tuples.Pair<Integer, Integer>> probeList) throws InterruptedException {
@@ -210,7 +294,8 @@ public class CountDistinctByScan {
 			if (filesInDir != null) {
 				for (File file : filesInDir) {
 					String filePath = file.getAbsolutePath();
-					if (filePath.endsWith(".parquet")) {
+//					if (filePath.endsWith(".parquet")) {
+					if (filePath.endsWith(".arrow")) {
 						fileToScan.add(file.getAbsolutePath());
 					}
 				}
